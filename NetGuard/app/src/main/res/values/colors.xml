@@ -1,0 +1,9 @@
+<resources>
+    <color name="bg">#0F1419</color>
+    <color name="card">#1C2630</color>
+    <color name="accent">#1E88E5</color>
+    <color name="good">#69F0AE</color>
+    <color name="warn">#FFC107</color>
+    <color name="bad">#FF5252</color>
+    <color name="ic_launcher_background">#1E88E5</color>
+</resources>
