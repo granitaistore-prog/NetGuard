@@ -4,10 +4,12 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -223,6 +225,92 @@ class MainActivity : Activity() {
         })
         container.addView(card2)
 
+        // --- Адмін-панель роутера ---
+        val card3 = sectionCard()
+        card3.addView(heading("Адмін-панель роутера"))
+        card3.addView(TextView(this).apply {
+            setTextColor(muted)
+            textSize = 12f
+            text = "Відкриває сторінку входу роутера в браузері — для зручності. " +
+                    "Жодних паролів ми не підбираємо й не вводимо."
+        })
+        val routerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        val gatewayForAdmin = wm.dhcpInfo?.gateway?.let { NetworkUtils.intToIp(it) }
+        val adminAddresses = linkedSetOf<String>().apply {
+            if (gatewayForAdmin != null && gatewayForAdmin.isNotBlank() && gatewayForAdmin != "—") {
+                add(gatewayForAdmin)
+            }
+            add("192.168.0.1")
+            add("192.168.1.1")
+        }
+        for (addr in adminAddresses) {
+            val b = primaryButton(addr) {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://$addr")))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Не вдалося відкрити браузер", Toast.LENGTH_SHORT).show()
+                }
+            }
+            routerRow.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(3), 0, dp(3), 0)
+            })
+        }
+        card3.addView(routerRow)
+        container.addView(card3)
+
+        // --- Перевірка зовнішнього доступу ---
+        val card4 = sectionCard()
+        card4.addView(heading("Зовнішній доступ"))
+        card4.addView(TextView(this).apply {
+            setTextColor(muted)
+            textSize = 12f
+            text = "Перевіряє вашу зовнішню (публічну) IP-адресу і намагається достукатись " +
+                    "до типових портів адмін-панелі (80, 443, 8080) ззовні мережі. " +
+                    "Деякі роутери блокують таку перевірку зсередини навіть коли порт насправді " +
+                    "відкритий — для надійності скористайтесь ще й онлайн-перевіркою нижче."
+        })
+        val extStatus = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setPadding(0, dp(8), 0, dp(6))
+        }
+        val extBtn = primaryButton("Перевірити зовнішній доступ") {}
+        val openCheckerBtn = primaryButton("Відкрити онлайн-перевірку") {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://canyouseeme.org/")))
+            } catch (_: Exception) {
+            }
+        }
+        extBtn.setOnClickListener {
+            extStatus.text = "Отримую зовнішню IP-адресу…"
+            Thread {
+                val ip = NetworkUtils.fetchPublicIp()
+                if (ip == null) {
+                    handler.post { extStatus.text = "Не вдалося отримати зовнішню IP. Перевірте інтернет-з'єднання." }
+                    return@Thread
+                }
+                val openPorts = intArrayOf(80, 443, 8080).filter { NetworkUtils.probeExternalPort(ip, it) }
+                handler.post {
+                    extStatus.text = if (openPorts.isEmpty()) {
+                        "Зовнішня IP: $ip\nПорти 80/443/8080 не відповіли зсередини мережі. " +
+                                "Це добра ознака, але не стовідсоткова гарантія — перевірте також онлайн-сервісом."
+                    } else {
+                        "Зовнішня IP: $ip\n⚠ Відповіли порти: ${openPorts.joinToString(", ")}. " +
+                                "Це може означати, що віддалене керування роутером (remote management / WAN access) " +
+                                "увімкнено. Перевірте цю опцію в адмін-панелі й вимкніть, якщо не користуєтесь."
+                    }
+                    extStatus.setTextColor(if (openPorts.isEmpty()) Color.WHITE else warn)
+                }
+            }.start()
+        }
+        card4.addView(extBtn)
+        card4.addView(extStatus)
+        card4.addView(openCheckerBtn)
+        container.addView(card4)
+
         return container
     }
 
@@ -239,8 +327,13 @@ class MainActivity : Activity() {
             setTextColor(muted)
             textSize = 13f
             text = "Сканує тільки вашу локальну підмережу (192.168.x.x), щоб показати, " +
-                    "скільки пристроїв підключено — зручно перевірити, чи немає чужих."
+                    "скільки пристроїв підключено — зручно перевірити, чи немає чужих. " +
+                    "Якщо вдасться прочитати MAC-адресу, додаток спробує визначити виробника " +
+                    "пристрою (на Android 10+ MAC інших пристроїв зазвичай недоступний — це обмеження ОС)."
         })
+
+        val knownPrefs = getSharedPreferences("known_devices", Context.MODE_PRIVATE)
+        val foundIpsThisScan = mutableListOf<String>()
 
         val statusText = TextView(this).apply {
             setTextColor(Color.WHITE)
@@ -257,6 +350,13 @@ class MainActivity : Activity() {
             setPadding(0, dp(8), 0, 0)
         }
         val scanBtn = primaryButton("Сканувати мережу") {}
+        val saveKnownBtn = primaryButton("Зберегти ці пристрої як відомі") {}
+        saveKnownBtn.visibility = View.GONE
+        saveKnownBtn.setOnClickListener {
+            knownPrefs.edit().putStringSet("ips", foundIpsThisScan.toSet()).apply()
+            Toast.makeText(this, "Збережено ${foundIpsThisScan.size} пристрої(їв) як відомі.", Toast.LENGTH_SHORT).show()
+            saveKnownBtn.visibility = View.GONE
+        }
 
         scanBtn.setOnClickListener {
             if (devicesScanning) return@setOnClickListener
@@ -268,6 +368,8 @@ class MainActivity : Activity() {
             }
             devicesScanning = true
             resultsBox.removeAllViews()
+            saveKnownBtn.visibility = View.GONE
+            foundIpsThisScan.clear()
             val (myIp, prefix) = pair
             if (prefix < 20) {
                 statusText.text = "Підмережа завелика для швидкого сканування."
@@ -278,6 +380,9 @@ class MainActivity : Activity() {
             val base = "${parts[0]}.${parts[1]}.${parts[2]}."
             statusText.text = "Сканування $base 1–254…"
             progressBar.progress = 0
+
+            val knownIps = knownPrefs.getStringSet("ips", emptySet()) ?: emptySet()
+            val arpMap = NetworkUtils.readArpTable()
 
             val pool = Executors.newFixedThreadPool(32)
             val scanned = AtomicInteger(0)
@@ -294,22 +399,48 @@ class MainActivity : Activity() {
                         progressBar.progress = (done * 100) / 254
                         statusText.text = "Перевірено $done / 254 · знайдено ${foundCount.get()}"
                         if (alive) {
+                            foundIpsThisScan.add(ip)
+                            val mac = arpMap[ip]
+                            val vendor = mac?.let { NetworkUtils.vendorFromMac(it) }
+                            val isKnownDevice = ip == myIp || ip == gatewayIp
+                            val isNew = !isKnownDevice && knownIps.isNotEmpty() && ip !in knownIps
                             val label = when (ip) {
                                 myIp -> "$ip — цей телефон"
                                 gatewayIp -> "$ip — роутер (шлюз)"
-                                else -> ip
+                                else -> ip + (vendor?.let { " — $it" } ?: "")
                             }
-                            val row = TextView(this).apply {
-                                text = "●  $label"
-                                setTextColor(if (ip == gatewayIp || ip == myIp) accent else Color.WHITE)
+                            val row = LinearLayout(this).apply {
+                                orientation = LinearLayout.VERTICAL
+                                setPadding(0, dp(4), 0, dp(4))
+                            }
+                            row.addView(TextView(this).apply {
+                                text = (if (isNew) "🆕 " else "●  ") + label
+                                setTextColor(when {
+                                    isNew -> warn
+                                    isKnownDevice -> accent
+                                    else -> Color.WHITE
+                                })
                                 textSize = 14f
-                                setPadding(0, dp(3), 0, dp(3))
+                            })
+                            if (mac != null) {
+                                row.addView(TextView(this).apply {
+                                    text = "MAC: $mac"
+                                    setTextColor(muted)
+                                    textSize = 11f
+                                })
                             }
                             resultsBox.addView(row)
                         }
                         if (done == 254) {
                             devicesScanning = false
-                            statusText.text = "Готово: у мережі знайдено ${foundCount.get()} пристрої(їв)."
+                            val newCount = foundIpsThisScan.count { it != myIp && it != gatewayIp && knownIps.isNotEmpty() && it !in knownIps }
+                            statusText.text = when {
+                                knownIps.isEmpty() -> "Готово: знайдено ${foundCount.get()} пристрої(їв). " +
+                                        "Натисніть «Зберегти ці пристрої як відомі», щоб надалі бачити нові."
+                                newCount > 0 -> "Готово: знайдено ${foundCount.get()} пристрої(їв), з них $newCount нових (позначено 🆕)."
+                                else -> "Готово: знайдено ${foundCount.get()} пристрої(їв), нових не виявлено."
+                            }
+                            saveKnownBtn.visibility = View.VISIBLE
                             pool.shutdown()
                         }
                     }
@@ -321,6 +452,7 @@ class MainActivity : Activity() {
         card1.addView(progressBar)
         card1.addView(statusText)
         card1.addView(resultsBox)
+        card1.addView(saveKnownBtn)
         container.addView(card1)
 
         val card2 = sectionCard()
