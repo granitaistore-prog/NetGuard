@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.netguard.app"
+    namespace = "com.buildlevel.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.netguard.app"
+        applicationId = "com.buildlevel.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -22,8 +22,4 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-}
-
-dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
 }
